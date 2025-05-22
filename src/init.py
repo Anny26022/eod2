@@ -2,6 +2,7 @@ import logging
 import sys
 import requests
 import time
+import json
 from argparse import ArgumentParser
 
 from nse import NSE
@@ -18,24 +19,98 @@ original_init = NSE.__init__
 original_req = NSE._NSE__req
 
 def get_nse_data(self, url, params=None, max_retries=3, retry_delay=5):
-    """Modified request function that uses ScraperAPI with retry logic"""
+    """Modified request function that uses ScraperAPI with async support for corporate actions"""
     logger.info(f"Fetching via ScraperAPI: {url}")
     
-    # First get cookies from NSE
-    cookies = {}
-    try:
-        headers = {
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
-            "accept-language": "en-US,en;q=0.9",
-            "accept-encoding": "gzip, deflate, br"
-        }
-        cookie_resp = requests.get("https://www.nseindia.com/", headers=headers, timeout=10)
-        cookies = cookie_resp.cookies.get_dict()
-        logger.info("Successfully obtained NSE cookies")
-    except Exception as e:
-        logger.warning(f"Failed to get NSE cookies: {e}")
+    # Special handling for corporate actions endpoint
+    if 'corporates-corporateActions' in url:
+        try:
+            # Create async job
+            async_payload = {
+                'apiKey': '492fed55ee317f3d46a5336e5bda77b8',
+                'urls': [url],
+                'apiParams': {
+                    'keep_headers': 'true',
+                    'device_type': 'desktop',
+                    'render': 'true',
+                    'premium': 'true'
+                }
+            }
+            
+            # Submit async job
+            job_response = requests.post(
+                'https://async.scraperapi.com/jobs',
+                json=async_payload,
+                timeout=30
+            )
+            
+            if job_response.status_code != 200:
+                raise RuntimeError(f"Failed to create async job: {job_response.text}")
+            
+            job_data = job_response.json()
+            job_id = job_data.get('id')
+            
+            if not job_id:
+                raise RuntimeError("No job ID received from ScraperAPI")
+            
+            logger.info(f"Created async job with ID: {job_id}")
+            
+            # Poll for results with retry logic
+            for attempt in range(max_retries * 2):  # More retries for polling
+                try:
+                    time.sleep(retry_delay)  # Wait between polls
+                    status_response = requests.get(
+                        f'https://async.scraperapi.com/jobs/{job_id}',
+                        params={'apiKey': '492fed55ee317f3d46a5336e5bda77b8'},
+                        timeout=30
+                    )
+                    
+                    if status_response.status_code != 200:
+                        logger.warning(f"Failed to get job status: {status_response.text}")
+                        continue
+                    
+                    status_data = status_response.json()
+                    status = status_data.get('status')
+                    
+                    if status == 'finished':
+                        results = status_data.get('results', [])
+                        if results and len(results) > 0:
+                            result = results[0]
+                            if result.get('status_code') == 200:
+                                # Create a response-like object
+                                class AsyncResponse:
+                                    def __init__(self, content, status_code):
+                                        self.content = content
+                                        self.status_code = status_code
+                                        self._content = content
+                                    
+                                    def json(self):
+                                        return json.loads(self.content)
+                                
+                                return AsyncResponse(
+                                    content=result.get('response', ''),
+                                    status_code=result.get('status_code')
+                                )
+                            
+                        raise RuntimeError(f"Job completed but no valid results: {status_data}")
+                    elif status == 'failed':
+                        raise RuntimeError(f"Job failed: {status_data.get('error')}")
+                    
+                    logger.info(f"Job status: {status}, waiting...")
+                    
+                except requests.exceptions.RequestException as e:
+                    logger.warning(f"Error checking job status (attempt {attempt + 1}): {e}")
+                    if attempt < (max_retries * 2) - 1:
+                        continue
+                    raise
+            
+            raise RuntimeError(f"Timeout waiting for job completion after {max_retries * 2} attempts")
+            
+        except Exception as e:
+            logger.error(f"Async scraping failed: {e}")
+            raise RuntimeError(f"Failed to fetch corporate actions: {e}")
     
+    # Regular request handling for other URLs
     for attempt in range(max_retries):
         try:
             payload = {
@@ -43,9 +118,8 @@ def get_nse_data(self, url, params=None, max_retries=3, retry_delay=5):
                 'url': url,
                 'keep_headers': 'true',
                 'device_type': 'desktop',
-                'cookies': '; '.join([f"{k}={v}" for k, v in cookies.items()]) if cookies else '',
-                'render': 'true',  # Enable JavaScript rendering
-                'premium': 'true'  # Use premium proxy pool
+                'render': 'true',
+                'premium': 'true'
             }
             
             if params:
@@ -71,7 +145,7 @@ def get_nse_data(self, url, params=None, max_retries=3, retry_delay=5):
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     continue
-                
+            
         except requests.exceptions.RequestException as e:
             logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
@@ -247,12 +321,4 @@ while True:
     writeJson(defs.META_FILE, defs.meta)
 
     logger.info(f'{defs.dates.dt:%d %b %Y}: Done\n{"-" * 52}')
-    nse.exit()  # Call exit through the NSE instance
-
-    if defs.dates.today == defs.dates.dt:
-        defs.cleanOutDated()
-
-    defs.meta["lastUpdate"] = defs.dates.lastUpdate = defs.dates.dt
-    writeJson(defs.META_FILE, defs.meta)
-
-    logger.info(f'{defs.dates.dt:%d %b %Y}: Done\n{"-" * 52}') 
+    nse.exit()  # Call exit through the NSE instance 
