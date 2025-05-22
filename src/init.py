@@ -17,39 +17,68 @@ sys.excepthook = defs.log_unhandled_exception
 original_init = NSE.__init__
 original_req = NSE._NSE__req
 
-def get_nse_data(self, url, params=None):
-    """Modified request function that uses ScraperAPI"""
+def get_nse_data(self, url, params=None, max_retries=3, retry_delay=5):
+    """Modified request function that uses ScraperAPI with retry logic"""
     logger.info(f"Fetching via ScraperAPI: {url}")
     
     # First get cookies from NSE
     cookies = {}
     try:
-        cookie_resp = requests.get("https://www.nseindia.com/", headers={
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36"
-        })
+        headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/87.0.4280.88 Safari/537.36",
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+            "accept-language": "en-US,en;q=0.9",
+            "accept-encoding": "gzip, deflate, br"
+        }
+        cookie_resp = requests.get("https://www.nseindia.com/", headers=headers, timeout=10)
         cookies = cookie_resp.cookies.get_dict()
+        logger.info("Successfully obtained NSE cookies")
     except Exception as e:
         logger.warning(f"Failed to get NSE cookies: {e}")
     
-    payload = {
-        'api_key': '492fed55ee317f3d46a5336e5bda77b8',
-        'url': url,
-        'keep_headers': 'true',
-        'device_type': 'desktop',
-        'cookies': '; '.join([f"{k}={v}" for k, v in cookies.items()]) if cookies else ''
-    }
+    for attempt in range(max_retries):
+        try:
+            payload = {
+                'api_key': '492fed55ee317f3d46a5336e5bda77b8',
+                'url': url,
+                'keep_headers': 'true',
+                'device_type': 'desktop',
+                'cookies': '; '.join([f"{k}={v}" for k, v in cookies.items()]) if cookies else '',
+                'render': 'true',  # Enable JavaScript rendering
+                'premium': 'true'  # Use premium proxy pool
+            }
+            
+            if params:
+                # If the URL already has query parameters, append new ones
+                if '?' in url:
+                    url += '&' + '&'.join(f'{k}={v}' for k, v in params.items())
+                else:
+                    url += '?' + '&'.join(f'{k}={v}' for k, v in params.items())
+                payload['url'] = url
+            
+            r = requests.get('https://api.scraperapi.com/', params=payload, timeout=30)
+            logger.info(f"ScraperAPI Response Status: {r.status_code}")
+            
+            if r.status_code == 200:
+                return r
+            elif r.status_code == 500:
+                logger.warning(f"ScraperAPI server error (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+            else:
+                logger.warning(f"ScraperAPI returned status code {r.status_code} (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
     
-    if params:
-        # If the URL already has query parameters, append new ones
-        if '?' in url:
-            url += '&' + '&'.join(f'{k}={v}' for k, v in params.items())
-        else:
-            url += '?' + '&'.join(f'{k}={v}' for k, v in params.items())
-        payload['url'] = url
-        
-    r = requests.get('https://api.scraperapi.com/', params=payload)
-    logger.info(f"ScraperAPI Response Status: {r.status_code}")
-    return r
+    raise RuntimeError(f"Failed to fetch data from {url} after {max_retries} attempts")
 
 def new_init(self, dir_path, server=False):
     """Modified init that handles cookies"""
