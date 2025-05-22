@@ -5,7 +5,6 @@ import time
 from argparse import ArgumentParser
 
 from nse import NSE
-
 from defs import defs
 from defs.utils import writeJson
 
@@ -14,51 +13,34 @@ logger = logging.getLogger(__name__)
 # Set the sys.excepthook to the custom exception handler
 sys.excepthook = defs.log_unhandled_exception
 
-# ScraperAPI configuration
-SCRAPER_API_KEY = "492fed55ee317f3d46a5336e5bda77b8"
-SCRAPER_API_BASE = "https://api.scraperapi.com/"
+\# Original NSE class methods we need to preserve
+original_init = NSE.__init__
+original_req = NSE._NSE__req
 
-def get_nse_data(url, max_retries=3, initial_delay=5):
+def get_nse_data(self, url):
+    """Modified request function that uses ScraperAPI"""
     logger.info(f"Fetching via ScraperAPI: {url}")
     
-    for attempt in range(max_retries):
-        try:
-            payload = {
-                'api_key': SCRAPER_API_KEY,
-                'url': url,
-                'keep_headers': 'true',
-                'device_type': 'desktop'
-            }
-            r = requests.get(SCRAPER_API_BASE, params=payload)
-            logger.info(f"ScraperAPI Response Status: {r.status_code}")
-            
-            # If successful or not a retriable error, return immediately
-            if r.status_code in [200, 404]:
-                return r
-                
-            # If we get rate limited or server error, retry
-            if r.status_code in [429, 500, 502, 503, 504]:
-                delay = initial_delay * (2 ** attempt)  # Exponential backoff
-                logger.warning(f"Attempt {attempt + 1}/{max_retries} failed with status {r.status_code}. Retrying in {delay} seconds...")
-                time.sleep(delay)
-                continue
-                
-            # For other status codes, return the response
-            return r
-            
-        except requests.exceptions.RequestException as e:
-            if attempt == max_retries - 1:  # Last attempt
-                logger.error(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
-                raise
-            
-            delay = initial_delay * (2 ** attempt)
-            logger.warning(f"Attempt {attempt + 1}/{max_retries} failed with error: {str(e)}. Retrying in {delay} seconds...")
-            time.sleep(delay)
-    
-    return r  # Return last response if we exit the loop
+    payload = {
+        'api_key': '492fed55ee317f3d46a5336e5bda77b8',
+        'url': url,
+        'keep_headers': 'true',
+        'device_type': 'desktop'
+    }
+    r = requests.get('https://api.scraperapi.com/', params=payload)
+    logger.info(f"ScraperAPI Response Status: {r.status_code}")
+    return r
 
-# Monkey patch the NSE class request method
+def new_init(self, dir_path, server=False):
+    """Modified init that skips cookie handling"""
+    self.dir = dir_path
+    self._NSE__session = requests.Session()
+
+# Monkey patch the NSE class
+NSE.__init__ = new_init
 NSE._NSE__req = get_nse_data
+NSE._NSE__getCookies = lambda self: {}
+NSE._NSE__setCookies = lambda self: {}
 
 parser = ArgumentParser(prog="init.py")
 
@@ -204,4 +186,4 @@ while True:
     defs.meta["lastUpdate"] = defs.dates.lastUpdate = defs.dates.dt
     writeJson(defs.META_FILE, defs.meta)
 
-    logger.info(f'{defs.dates.dt:%d %b %Y}: Done\n{"-" * 52}')
+    logger.info(f'{defs.dates.dt:%d %b %Y}: Done\n{"-" * 52}') 
