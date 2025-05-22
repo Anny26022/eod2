@@ -1,0 +1,51 @@
+name: Daily EOD Data Sync
+
+permissions:
+  contents: write    # Required for pushing changes
+  pull-requests: write
+
+on:
+  schedule:
+    - cron: '35 11 * * 1-5'  # Runs at 5:05 PM IST (11:35 UTC) Monday-Friday
+  workflow_dispatch:       # Allow manual trigger from GitHub UI
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout eod2 with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: true
+          fetch-depth: 0    # Required for pushing changes
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas requests
+
+      - name: Run init.py
+        working-directory: ./src
+        run: python init.py
+
+      - name: Commit changes
+        run: |
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add .
+          git commit -m "Auto: Daily data update" || echo "No changes to commit"
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+          force_with_lease: true  # Safer than force push
+          directory: ./eod2_data  # Push from the submodule directory 
