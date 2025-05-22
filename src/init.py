@@ -21,10 +21,19 @@ def get_nse_data(self, url, params=None, max_retries=3, retry_delay=5):
     """Modified request function that uses ScraperAPI"""
     logger.info(f"Fetching via ScraperAPI: {url}")
     
-    # Skip corporate actions endpoint and continue with next task
+    # Skip corporate actions endpoint and return empty response
     if 'corporates-corporateActions' in url:
         logger.warning("Skipping corporate actions endpoint")
-        return None
+        class DummyResponse:
+            def __init__(self):
+                self.status_code = 200
+                self._content = b'{"data":[]}'
+                self.content = self._content
+            
+            def json(self):
+                return {"data": []}  # Return empty data array
+        
+        return DummyResponse()
     
     # Regular request handling for other URLs
     for attempt in range(max_retries):
