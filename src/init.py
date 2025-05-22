@@ -1,5 +1,7 @@
-import logging
+mport logging
 import sys
+import requests
+import time
 from argparse import ArgumentParser
 
 from nse import NSE
@@ -11,6 +13,52 @@ logger = logging.getLogger(__name__)
 
 # Set the sys.excepthook to the custom exception handler
 sys.excepthook = defs.log_unhandled_exception
+
+# ScraperAPI configuration
+SCRAPER_API_KEY = "492fed55ee317f3d46a5336e5bda77b8"
+SCRAPER_API_BASE = "https://api.scraperapi.com/"
+
+def get_nse_data(url, max_retries=3, initial_delay=5):
+    logger.info(f"Fetching via ScraperAPI: {url}")
+    
+    for attempt in range(max_retries):
+        try:
+            payload = {
+                'api_key': SCRAPER_API_KEY,
+                'url': url,
+                'keep_headers': 'true',
+                'device_type': 'desktop'
+            }
+            r = requests.get(SCRAPER_API_BASE, params=payload)
+            logger.info(f"ScraperAPI Response Status: {r.status_code}")
+            
+            # If successful or not a retriable error, return immediately
+            if r.status_code in [200, 404]:
+                return r
+                
+            # If we get rate limited or server error, retry
+            if r.status_code in [429, 500, 502, 503, 504]:
+                delay = initial_delay * (2 ** attempt)  # Exponential backoff
+                logger.warning(f"Attempt {attempt + 1}/{max_retries} failed with status {r.status_code}. Retrying in {delay} seconds...")
+                time.sleep(delay)
+                continue
+                
+            # For other status codes, return the response
+            return r
+            
+        except requests.exceptions.RequestException as e:
+            if attempt == max_retries - 1:  # Last attempt
+                logger.error(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
+                raise
+            
+            delay = initial_delay * (2 ** attempt)
+            logger.warning(f"Attempt {attempt + 1}/{max_retries} failed with error: {str(e)}. Retrying in {delay} seconds...")
+            time.sleep(delay)
+    
+    return r  # Return last response if we exit the loop
+
+# Monkey patch the NSE class request method
+NSE._NSE__req = get_nse_data
 
 parser = ArgumentParser(prog="init.py")
 
@@ -36,7 +84,7 @@ if args.config:
 special_sessions = defs.downloadSpecialSessions()
 
 try:
-    nse = NSE(defs.DIR, server=True)
+    nse = NSE(defs.DIR)
 except (TimeoutError, ConnectionError) as e:
     logger.warning(
         f"Network error connecting to NSE - Please try again later. - {e!r}"
