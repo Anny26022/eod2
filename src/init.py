@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 # Set the sys.excepthook to the custom exception handler
 sys.excepthook = defs.log_unhandled_exception
 
-\# Original NSE class methods we need to preserve
+# Original NSE class methods we need to preserve
 original_init = NSE.__init__
 original_req = NSE._NSE__req
 
